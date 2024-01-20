@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+
+# Author: lei.zeng@tu-dortmund.de
+
+import os
+import rospy
+import vlc
+import actionlib
+from vlc_player_ros.msg import VlcPlayerAction, VlcPlayerResult, VlcPlayerActionFeedback
+from std_msgs.msg import Bool
+
+
+class VlcPlayerRos:
+    def __init__(self) -> None:
+        ''' 
+        {
+            0: 'NothingSpecial',
+            1: 'Opening',
+            2: 'Buffering',
+            3: 'Playing',
+            4: 'Paused',
+            5: 'Stopped',
+            6: 'Ended',
+            7: 'Error',
+        }
+        '''
+        self._player = vlc.MediaPlayer()
+        self._result = VlcPlayerResult()
+        self._feedback = VlcPlayerActionFeedback()
+        self._action_server = actionlib.SimpleActionServer(
+            'vlc_player', VlcPlayerAction, execute_cb=self.goal_cb, auto_start=False)
+        self._action_server.start()
+        self._pause_sub = rospy.Subscriber(
+            'vlc_pause', Bool, self.pause_cb, queue_size=10)
+        self._vlc_state = vlc.State._enum_names_
+
+    def goal_cb(self, goal):
+        self._result.path = goal.path
+        self._feedback.feedback.path = goal.path
+        if os.path.exists(goal.path):
+            rospy.loginfo('path is valid, %s' % goal.path)
+            self._player.set_mrl(goal.path)
+
+            if goal.rate != '':
+                self._player.set_rate(float(goal.rate))
+                rospy.loginfo('set rate: %f' % float(goal.rate))
+            else:
+                self._player.set_rate(1)
+
+            if goal.volume != '':
+                self._player.audio_set_volume(int(goal.volume))
+                rospy.loginfo('set volume: %d' % int(goal.volume))
+            else:
+                self._player.audio_set_volume(100)
+
+            self._player.play()
+            self.feedback_pub()
+            while self._player.get_state() in [vlc.State.NothingSpecial,   vlc.State.Opening,  vlc.State.Buffering]:
+                self.feedback_pub()
+                if self.preempt_cb():
+                    return
+                rospy.sleep(0.1)
+            while self._player.get_state() in [vlc.State.Playing, vlc.State.Paused]:
+                self.feedback_pub()
+                if self.preempt_cb():
+                    return
+                rospy.sleep(0.1)
+
+            self._player.stop()
+            self.feedback_pub()
+            rospy.loginfo('vlc play done')
+            self._result.state = str(self._vlc_state[self._player.get_state()])
+            self._action_server.set_succeeded(self._result, 'done')
+        else:
+            rospy.logwarn('file path not exist')
+            self._result.state = str(self._vlc_state[self._player.get_state()])
+            self._action_server.set_aborted(self._result, 'file not exists')
+
+    def preempt_cb(self):
+        if self._action_server.is_preempt_requested():
+            self._player.stop()
+            self.feedback_pub()
+            rospy.loginfo('vlc_player Preempted')
+            self._result.state = str(self._vlc_state[self._player.get_state()])
+            self._action_server.set_preempted(self._result, 'preempted')
+            return True
+        else:
+            return False
+
+    def feedback_pub(self):
+        self._feedback.feedback.state = str(
+            self._vlc_state[self._player.get_state()])
+        self._action_server.publish_feedback(self._feedback.feedback)
+
+    def pause_cb(self, msg):
+        if msg.data and self._player.get_state() == vlc.State.Playing:
+            self._player.pause()
+            rospy.loginfo('vlc_player paused')
+        if msg.data == False and self._player.get_state() == vlc.State.Paused:
+            self._player.set_pause(0)
+            rospy.loginfo('vlc_player resumed')
+
+
+def main():
+    rospy.init_node('vlc_player')
+    VlcPlayerRos()
+    try:
+        rospy.spin()
+    except KeyboardInterrupt:
+        print('Shutting down ... ')
+
+
+if __name__ == '__main__':
+    main()

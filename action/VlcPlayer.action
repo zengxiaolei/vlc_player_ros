@@ -1,0 +1,12 @@
+# Define the goal
+string path
+string rate
+string volume
+---
+# Define the result
+string path
+string state
+---
+# Define a feedback message
+string path
+string state
